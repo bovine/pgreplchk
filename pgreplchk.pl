@@ -71,6 +71,9 @@ while (1) {
 	if (exists($timestamps{$pos}{'sent'})) {
 	    my $delay = $timestamps{$pos}{'recv'} - $timestamps{$pos}{'sent'};
 	    printf("Transaction %s took %.2f secs\n", $pos, $delay);
+	    if ($delay > 5.0) {
+		print "WARNING: Large replication delay detected... may indicate over utilization.\n";
+	    }
 	    $desyncCount = 0;
 	} elsif ($desyncCount++ > 10) {
 	    print "WARNING: Waiting for matching transaction (try $desyncCount)... may indicate large desync.\n";
@@ -89,10 +92,12 @@ while (1) {
 	$idleSlaveCount %= 1000;
     } elsif ($idleSlaveCount > 1000) {
 	if ($last_sent ne $last_recv) {
-	    print "ERROR: Database is not replication replication but activity is detected on master.\n";
+	    print "ERROR: Database is not replicating but activity is detected on master.\n";
 	}
 	$idleSlaveCount %= 1000;
     }
+
+    # TODO: prune %timestamps if it is getting large.
 
     sleep(0.01);
 };
