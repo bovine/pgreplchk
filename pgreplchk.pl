@@ -26,6 +26,11 @@ my %slave = (
     username => 'pgsql'
     );
 
+# tunable warning thresholds.
+my $delay_warning_threshold = 5.0;
+my $max_desync_txn_count_warning = 10;
+
+# Connect to a database and return the database handle.
 sub dbconnect (%) {
     my %params = @_;
     my $connstr = "dbi:Pg:" . 	('dbname=' . $params{'dbname'}) .
@@ -37,16 +42,20 @@ sub dbconnect (%) {
     return $dbh;
 }
 
-my $dbmh = dbconnect(%master) || die;
-my $dbsh = dbconnect(%slave) || die;
+# database handles for the master and slave.
+my $dbmh = dbconnect(%master) || die "failed to connect to the master";
+my $dbsh = dbconnect(%slave) || die "failed to connect to the slave";
 
 
+# state information variables.
 my ($last_sent, $last_recv, %timestamps);
 my $desyncCount = 0;
 my $idleMasterCount = 0;
 my $idleSlaveCount = 0;
+my $cleanupCount = 0;
 
 while (1) {
+    # Get the last sent transaction on the master.
     my $res = $dbmh->selectall_arrayref("SELECT pg_current_xlog_location()");
     my $pos = $res->[0]->[0];
     if (!defined($last_sent)) {
@@ -59,6 +68,7 @@ while (1) {
 	$idleMasterCount++;
     }
     
+    # Get the last replayed transaction on the slave.
     $res = $dbsh->selectall_arrayref("SELECT pg_last_xlog_replay_location()");
     $pos = $res->[0]->[0];
     if (!defined($last_recv)) {
@@ -69,19 +79,32 @@ while (1) {
 	$idleSlaveCount = 0;
 
 	if (exists($timestamps{$pos}{'sent'})) {
+	    # found a transaction that we saw both the sent and recv times for.
 	    my $delay = $timestamps{$pos}{'recv'} - $timestamps{$pos}{'sent'};
 	    printf("Transaction %s took %.2f secs\n", $pos, $delay);
-	    if ($delay > 5.0) {
+	    if ($delay > $delay_warning_threshold) {
 		print "WARNING: Large replication delay detected... may indicate over utilization.\n";
 	    }
 	    $desyncCount = 0;
-	} elsif ($desyncCount++ > 10) {
+
+	    # clean out old transactions that are older than the match we just found.
+	    if ($cleanupCount++ > 1000) {
+		my $txn_sent = $timestamps{$pos}{'sent'};
+		foreach my $txn (keys %timestamps) {
+		    if ($timestamps{$txn}{'sent'} < $txn_sent) {
+			delete $timestamps{$txn};
+		    }
+		}
+		$cleanupCount = 0;
+	    }
+	} elsif ($desyncCount++ > $max_desync_txn_count_warning) {
 	    print "WARNING: Waiting for matching transaction (try $desyncCount)... may indicate large desync.\n";
 	}
     } else {
 	$idleSlaveCount++;
     }
 
+    # Check for idle states on the databases and print warnings.
     if ($idleMasterCount > 1000 && $idleSlaveCount > 1000) {
 	if ($last_sent eq $last_recv) {
 	    print "Databases are idle and identical.\n";
@@ -97,8 +120,7 @@ while (1) {
 	$idleSlaveCount %= 1000;
     }
 
-    # TODO: prune %timestamps if it is getting large.
-
+    # Sleep to avoid spinning too fast.
     sleep(0.01);
 };
 
