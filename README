@@ -1,0 +1,6 @@
+pgreplchk.pl -- PostgreSQL 9.x replication checker
+https://github.com/bovine/pgreplchk
+
+Connects simultaneously to two PostgreSQL databases and checks the
+Streaming Replication status, by comparing the transaction ids and
+computing the replication delay.
